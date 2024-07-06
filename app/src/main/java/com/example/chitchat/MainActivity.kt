@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import com.google.firebase.FirebaseApp
 
 class MainActivity : ComponentActivity() {
@@ -16,9 +17,9 @@ class MainActivity : ComponentActivity() {
         val userViewModel : UserViewModel by viewModels()
         FirebaseApp.initializeApp(this)
         setContent {
-
+            val systemUiController = rememberSystemUiController()
+            systemUiController.isStatusBarVisible = false
            MyApp(userViewModel = userViewModel)
-           // ImageUploader()
         }
     }
 }

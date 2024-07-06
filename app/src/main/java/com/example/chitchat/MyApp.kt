@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
@@ -46,9 +48,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
@@ -64,6 +70,8 @@ import com.example.chitchat.screens.SignInPage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
@@ -83,51 +91,46 @@ fun MyApp(userViewModel: UserViewModel) {
         }
 
         composable(Screen.Home.route) {
-            HomeScreen(navController, userViewModel)
+            HomeScreen(navController = navController, userViewModel = userViewModel)
         }
         composable(Screen.AddCustomer.route) {
-            AddCustomerScreen(navController, userViewModel)
+            AddCustomerScreen(navController = navController, userViewModel = userViewModel)
         }
         composable(Screen.OldCustomers.route) {
-            OldCustomersScreen(navController, userViewModel)
+            OldCustomersScreen(navController = navController, userViewModel = userViewModel)
         }
         composable(
             route = "${Screen.CustomerTransactions.route}/{userId}",
             arguments = listOf(navArgument("userId") { type = NavType.StringType })
         ) { backStackEntry ->
             val userId = backStackEntry.arguments?.getString("userId") ?: ""
-            CustomerTransactionsScreen(userId, navController, userViewModel)
+            CustomerTransactionsScreen(
+                userId = userId,
+                navController = navController,
+                userViewModel = userViewModel
+            )
         }
+
+
         composable(
-            route = "${Screen.EditTransaction.route}/{userId}/{amount}/{date}/{type}/{billUrl}",
+            route = "${Screen.EditTransaction.route}/{userId}/{date}",
             arguments = listOf(
                 navArgument("userId") { type = NavType.StringType },
-                navArgument("amount") { type = NavType.StringType },
-                navArgument("date") { type = NavType.StringType },
-                navArgument("type") { type = NavType.StringType },
-                navArgument("billUrl") { type = NavType.StringType }
-                //navArgument("uri") { type = NavType.StringType }
+                navArgument("date") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val userId = backStackEntry.arguments?.getString("userId") ?: ""
-            val amount = backStackEntry.arguments?.getString("amount") ?: ""
             val date = backStackEntry.arguments?.getString("date") ?: ""
-            val type = backStackEntry.arguments?.getString("type") ?: ""
-            val billUrl = backStackEntry.arguments?.getString("billUrl") ?: ""
-           // val uriString = backStackEntry.arguments?.getString("uri") ?: ""
 
-            //Log.d("EditTransactionScreen", "Arguments: userId=$userId, amount=$amount, date=$date, type=$type, billUrl=$billUrl")
-
-            val decodedBillUrl = Uri.decode(billUrl)
-            //val decodedBillUrl = URLDecoder.decode(billUrl, "UTF-8")
-            //val uri = Uri.parse(Uri.decode(uriString))
-            //EditTransactionScreen(userId, amount, date, decodedBillUrl, type, navController, userViewModel)
-            EditTransactionScreen(userId, amount, date,
-                decodedBillUrl, type, navController, userViewModel)
+            EditTransactionScreen(
+                userId = userId,
+                date = date,
+                navController = navController,
+                userViewModel = userViewModel
+            )
         }
     }
 }
-
 
 
 @Composable
@@ -150,14 +153,12 @@ fun OldCustomersScreen(navController: NavHostController, userViewModel: UserView
                 CustomerItem(
                     user = user,
                     onClick = { navController.navigate("${Screen.CustomerTransactions.route}/${user.id}") },
-                    userViewModel
+                    userViewModel = userViewModel
                 )
             }
         }
     }
-
 }
-
 
 
 @Composable
@@ -169,9 +170,9 @@ fun CustomerTransactionsScreen(
     val user = userViewModel.users.observeAsState().value?.get(userId)
     var showToast by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     Column(Modifier.fillMaxSize()) {
-
         Spacer(modifier = Modifier.height(50.dp))
         Button(
             onClick = {
@@ -194,7 +195,15 @@ fun CustomerTransactionsScreen(
             onValueChange = { money = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
+                .padding(12.dp),
+            keyboardOptions = KeyboardOptions.Default.copy(
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(onDone = {
+                // Hide the keyboard when the user presses the done button
+
+                keyboardController?.hide()
+            })
         )
 
         val type = remember { mutableStateOf("sent") }
@@ -256,14 +265,23 @@ fun CustomerTransactionsScreen(
             uri?.let {
                 scope.launch {
                     isLoading.value = true
-                    url.value = userViewModel.uploadImageToFirebase(uri, context)
+                    url.value = userViewModel.uploadImageToFirebase(uri, context, userId = userId)
                     isLoading.value = false
                 }
             }
         }
 
+        // Adding camera is pending
+//        val launcherCam = rememberLauncherForActivityResult(
+//            contract = ActivityResultContracts.TakePicture()
+//        ) {
+//            if(it){
+//
+//            }
+//        }
+
         Row(Modifier.fillMaxWidth()) {
-            Button(onClick = { launcher.launch("image/*") }) {
+            Button(onClick = { launcher.launch("image/*") }, Modifier.offset(x = 18.dp)) {
                 Text(text = "Add bill")
             }
 
@@ -272,39 +290,47 @@ fun CustomerTransactionsScreen(
             }
         }
 
-
-
         Spacer(modifier = Modifier.height(50.dp))
 
         if (user != null) {
-            if (user.transactions.isNotEmpty()) {
+            var userList = user.transactions.values.toList()
+
+            val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+            userList = userList.sortedBy { LocalDateTime.parse(it.date, formatter) }.reversed()
+
+            if (userList.isNotEmpty()) {
                 LazyColumn {
-                    items(user.transactions) { transaction ->
+                    items(userList) { transaction ->
                         TransactionItem(
                             transaction = transaction,
                             onDelete = { userViewModel.deleteTransaction(userId, transaction) },
                             navController = navController,
-                            userId=userId,
-                            imageUri.toString()
+                            userId = userId
                         )
                     }
                 }
             } else {
-                Text(text = "No Transactions!", fontSize = 24.sp, color = Color.Red)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Text(text = "No Transactions!", fontSize = 24.sp, color = Color.Red)
+                }
             }
         }
     }
 }
 
+
 @Composable
 fun TransactionItem(
     transaction: Transaction,
-    onDelete: () -> String,
+    onDelete: () -> Unit,
     navController: NavHostController,
-    userId: String,
-    uri : String
+    userId: String
 ) {
     val context = LocalContext.current
+    val amountColor = if (transaction.type != "sent") Color(0XFF3e9c35) else Color.Red
+    val amountPrefix = if (transaction.type != "sent") "+ ₹" else "- ₹"
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -318,31 +344,27 @@ fun TransactionItem(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(text = "Amount: ${transaction.amount}")
+                Text(
+                    text = "$amountPrefix${transaction.amount}",
+                    color = amountColor,
+                    fontSize = 24.sp
+                )
                 IconButton(
                     onClick = {
-                        try {
-                            if (transaction.billUrl.isNotEmpty() && Uri.parse(transaction.billUrl).isAbsolute) {
-                                val encodedUrl = Uri.encode(transaction.billUrl)
-                                Log.d("TransactionItem", "success TransactionItem: $encodedUrl")
-                                navController.navigate(
-                                    "${Screen.EditTransaction.route}/$userId/${transaction.amount}/${transaction.date}/${transaction.type}/$encodedUrl"
-                                )
+                        navController.navigate(
+                            "${Screen.EditTransaction.route}/$userId/${transaction.date}"
+                        )
+//                        try {
+//                            if (transaction.billUrl.isNotEmpty() && Uri.parse(transaction.billUrl).isAbsolute) {
 //                                navController.navigate(
-//                                    "${Screen.EditTransaction.route}/$userId/${transaction.amount}/${transaction.date}/${transaction.type}/$${
-//                                        Uri.encode(
-//                                            uri
-//                                        )
-//                                    }"
+//                                    "${Screen.EditTransaction.route}/$userId/${transaction.date}"
 //                                )
-                            } else {
-                                Log.d("TransactionItem", "Invalid URL")
-                                Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
-                            Log.e("TransactionItem", "Navigation error: ${e.message}", e)
-                            Toast.makeText(context, "Navigation error: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
+//                            } else {
+//                                Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
+//                            }
+//                        } catch (e: Exception) {
+//                            Toast.makeText(context, "Navigation error: ${e.message}", Toast.LENGTH_SHORT).show()
+//                        }
                     }
                 ) {
                     Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit Transaction")
@@ -351,23 +373,9 @@ fun TransactionItem(
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = "Date: ${transaction.date}")
             Spacer(modifier = Modifier.height(4.dp))
-            Text(text = "Type: ${transaction.type}")
-            Spacer(modifier = Modifier.height(4.dp))
-//
             Button(
                 onClick = {
-                    var res = onDelete()
-                    if (res == "okay") {
-                        Toast.makeText(
-                            context,
-                            "Transaction deleted successfully",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        Toast.makeText(context, "Failed to delete transaction", Toast.LENGTH_SHORT)
-                            .show()
-                    }
-
+                    onDelete()
                 },
                 modifier = Modifier.align(Alignment.End)
             ) {
@@ -377,31 +385,20 @@ fun TransactionItem(
     }
 }
 
-
-
-
 @Composable
 fun EditTransactionScreen(
     userId: String,
-    amount: String,
     date: String,
-    billUrl: String,
-    type: String,
     navController: NavHostController,
     userViewModel: UserViewModel
 ) {
-
-    Log.d("EditTransactionScreen", "Initialized with userId: $userId, amount: $amount, date: $date, billUrl: $billUrl, type: $type")
-    //Log.d("krish", "TransactionItem: ${Screen.EditTransaction.route}/$userId/${amount}/${date}/${type}/$billUri")
-
-    Text(text = "hi", fontSize = 50.sp)
-    val transaction=Transaction(amount,date,type,billUrl)
+    val oldTransaction = userViewModel.users.value?.get(userId)?.transactions?.get(date)
     val context = LocalContext.current
-    var money by remember { mutableStateOf(amount) }
-    val typee = remember { mutableStateOf(type) }
+    var money by remember { mutableStateOf(oldTransaction!!.amount) }
+    val typee = remember { mutableStateOf(oldTransaction!!.type) }
     val scope = rememberCoroutineScope()
     val isLoading = remember { mutableStateOf(false) }
-    val url = remember { mutableStateOf(billUrl) }
+    val url = remember { mutableStateOf(oldTransaction!!.billUrl) }
 
     Column(
         Modifier
@@ -414,7 +411,10 @@ fun EditTransactionScreen(
             value = money,
             onValueChange = { money = it },
             label = { Text("Amount") },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions.Default.copy(
+                imeAction = ImeAction.Done
+            )
         )
 
         Column {
@@ -441,7 +441,7 @@ fun EditTransactionScreen(
             uri?.let {
                 scope.launch {
                     isLoading.value = true
-                    val temp = userViewModel.uploadImageToFirebase(uri, context)
+                    val temp = userViewModel.uploadImageToFirebase(uri, context, userId)
                     if (temp.isNotEmpty() && temp != "error") {
                         url.value = temp
                         Log.d("EditTransactionScreen", "Image URL updated: $temp")
@@ -464,25 +464,39 @@ fun EditTransactionScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         if (url.value.isNotEmpty() && url.value != "error") {
-            Log.d("EditTransactionScreen", "Displaying image with URL: ${url.value}")
             AsyncImage(
                 model = url.value,
                 contentDescription = null,
                 modifier = Modifier
                     .padding(4.dp)
                     .fillMaxWidth()
-                    .height(350.dp)// You can adjust the height as needed
+                    .height(350.dp) // You can adjust the height as needed
                     .clip(RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop
             )
+        } else {
+            Card(
+                onClick = { /*TODO*/ }, modifier = Modifier
+                    .padding(4.dp)
+                    .fillMaxWidth()
+                    .height(350.dp) // You can adjust the height as needed
+                    .clip(RoundedCornerShape(12.dp))
+            ) {
+                Text(
+                    text = "No Bill Attached",
+                    Modifier.offset(x = 80.dp, y = 170.dp),
+                    fontSize = 24.sp
+                )
+            }
         }
 
         Button(
             onClick = {
                 val newTransaction = Transaction(money, date, typee.value, url.value)
-                val res = userViewModel.editTransaction(userId, transaction, newTransaction)
+                val res = userViewModel.editTransaction(userId, date, newTransaction)
                 if (res == "okay") {
-                    Toast.makeText(context, "Transaction edited successfully", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Transaction edited successfully", Toast.LENGTH_SHORT)
+                        .show()
                 } else {
                     Toast.makeText(context, "Failed to edit transaction", Toast.LENGTH_SHORT).show()
                 }
@@ -495,9 +509,8 @@ fun EditTransactionScreen(
             Text("Save")
         }
     }
-
-
 }
+
 
 @Composable
 fun SplashScreen(navController: NavController, viewModel: UserViewModel) {
@@ -588,6 +601,11 @@ fun HomeScreen(navController: NavHostController, userViewModel: UserViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
+                text = "Hello Mr. " + userViewModel.currPerson,
+                fontSize = 18.sp,
+                modifier = Modifier.offset(y = 30.dp)
+            )
+            Text(
                 text = "Total Balance is : ",
                 fontSize = 30.sp,
                 modifier = Modifier.offset(y = 40.dp)
@@ -621,7 +639,7 @@ fun HomeScreen(navController: NavHostController, userViewModel: UserViewModel) {
 
             Button(
                 onClick = { navController.navigate(Screen.AddCustomer.route) },
-                Modifier.offset(y = 430.dp, x = -90.dp)
+                Modifier.offset(y = 430.dp, x = (-90).dp)
             ) {
                 Text("Add New Customer")
             }
@@ -649,7 +667,6 @@ fun HomeScreen(navController: NavHostController, userViewModel: UserViewModel) {
 fun AddCustomerScreen(navController: NavHostController, userViewModel: UserViewModel) {
     var name by remember { mutableStateOf("") }
     var phoneNumber by remember { mutableStateOf("") }
-    var showToast by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     Column(
@@ -661,7 +678,11 @@ fun AddCustomerScreen(navController: NavHostController, userViewModel: UserViewM
             label = { Text("Name") },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 8.dp)
+                .padding(bottom = 8.dp),
+            keyboardOptions = KeyboardOptions.Default.copy(
+                imeAction = ImeAction.Next,
+                capitalization = KeyboardCapitalization.Words
+            )
         )
         OutlinedTextField(
             value = phoneNumber,
@@ -669,15 +690,17 @@ fun AddCustomerScreen(navController: NavHostController, userViewModel: UserViewM
             label = { Text("Phone Number") },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 8.dp)
+                .padding(bottom = 8.dp),
+            keyboardOptions = KeyboardOptions.Default.copy(
+                imeAction = ImeAction.Done,
+                keyboardType = KeyboardType.Number,
+            )
         )
         Button(
             onClick = {
                 val user = User(id = phoneNumber, name = name)
                 val res = userViewModel.addUser(user)
-                // Clear input fields after adding the user
 
-                //navController.popBackStack() // Pop the current screen off the stack
                 if (res != "error") {
                     name = ""
                     phoneNumber = ""

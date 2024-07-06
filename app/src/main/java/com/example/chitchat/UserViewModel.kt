@@ -1,6 +1,7 @@
 package com.example.chitchat
 
 import android.content.Context
+
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
@@ -32,6 +33,7 @@ class UserViewModel : ViewModel() {
     val authState: LiveData<AuthState> = _authState
     var currPerson = "-1"
     val storage = FirebaseStorage.getInstance()
+    val users: MutableLiveData<Map<String, User>> = MutableLiveData(emptyMap())
 
 
     init {
@@ -54,23 +56,30 @@ class UserViewModel : ViewModel() {
 
     suspend fun uploadImageToFirebase(
         uri: Uri,
-        context: Context
+        context: Context,
+        userId: String
+        //date: String
     ): String {
         val storage = FirebaseStorage.getInstance()
-        val storageRef = storage.reference.child("billImages/$currPerson/${uri.lastPathSegment}")
+        val storageRef = storage.reference.child("billImages/$userId/${uri.lastPathSegment}")
 
         return try {
             // Upload the file to Firebase Storage
             storageRef.putFile(uri).await()
             // Get the download URL
             val downloadUrl = storageRef.downloadUrl.await().toString()
+            // Update transaction's billUrl in the ViewModel
+            //users.value?.get(userId)?.transactions?.get(date)?.billUrl = downloadUrl
+            // Inform UI or ViewModel about success (consider using LiveData or callback)
             Toast.makeText(context, "Upload successful!", Toast.LENGTH_SHORT).show()
             downloadUrl
         } catch (e: Exception) {
+            // Handle specific exceptions or log errors
             Toast.makeText(context, "Upload failed!", Toast.LENGTH_SHORT).show()
             "error"
         }
     }
+
 
     fun login(email: String, password: String) {
         if (email.isEmpty() || password.isEmpty()) {
@@ -125,7 +134,7 @@ class UserViewModel : ViewModel() {
         }
     }
 
-    val users: MutableLiveData<Map<String, User>> = MutableLiveData(emptyMap())
+
 
 
     suspend fun getUserById(userId: String): User {
@@ -138,10 +147,10 @@ class UserViewModel : ViewModel() {
                         if (user != null) {
                             continuation.resume(user)
                         } else {
-                            continuation.resume(User("-1", "-", "-", mutableListOf()))
+                            continuation.resume(User("-1", "-"))
                         }
                     } else {
-                        continuation.resume(User("-1", "-", "-", mutableListOf()))
+                        continuation.resume(User("-1", "-"))
                     }
                 }
                 .addOnFailureListener { exception ->
@@ -190,7 +199,7 @@ class UserViewModel : ViewModel() {
     }
 
     private fun invalid(number: String): Boolean {
-        if (number == "") {
+        if (number == ""||number=="0") {
             return true
         }
         for (i in number) {
@@ -216,21 +225,20 @@ class UserViewModel : ViewModel() {
         }
     }
 
-    fun editUser(user: User) {
-        viewModelScope.launch {
-            usersCollection.document(user.id).set(user)
-            // Update the LiveData map
-            val userId = user.id
-            totalBalance.value =
-                users.value?.get(userId)?.sum?.let { totalBalance.value?.minus(it.toInt()) }
-            val currentUsers = users.value ?: emptyMap()
-            users.value = currentUsers + (user.id to user)
-            totalBalance.value =
-                users.value?.get(userId)?.sum?.let { totalBalance.value?.plus(it.toInt()) }
-            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
-        }
-    }
-
+//    fun editUser(user: User) {
+//        viewModelScope.launch {
+//            usersCollection.document(user.id).set(user)
+//            // Update the LiveData map
+//            val userId = user.id
+//            totalBalance.value =
+//                users.value?.get(userId)?.sum?.let { totalBalance.value?.minus(it.toInt()) }
+//            val currentUsers = users.value ?: emptyMap()
+//            users.value = currentUsers + (user.id to user)
+//            totalBalance.value =
+//                users.value?.get(userId)?.sum?.let { totalBalance.value?.plus(it.toInt()) }
+//            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
+//        }
+//    }
 
     fun addTransaction(userId: String, transaction: Transaction): String {
         // Update local state first for immediate UI refresh
@@ -240,7 +248,7 @@ class UserViewModel : ViewModel() {
         val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
         val user = currentUsers[userId]
         if (user != null) {
-            user.transactions.add(transaction)
+            user.transactions[transaction.date] = transaction
             var transactionAmount = transaction.amount.toIntOrNull() ?: 0
             if (transaction.type == "sent") {
                 transactionAmount = -(transactionAmount)
@@ -250,8 +258,6 @@ class UserViewModel : ViewModel() {
             users.value = currentUsers
             totalBalance.value = totalBalance.value?.plus(transactionAmount)
             totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
-            // Trigger recomposition
-            //forceRecompose.value = !forceRecompose.value!!
         }
 
         // Sync with Firestore in the background
@@ -259,7 +265,7 @@ class UserViewModel : ViewModel() {
             val userRef = usersCollection.document(userId)
             userRef.update(
                 mapOf(
-                    "transactions" to FieldValue.arrayUnion(transaction),
+                    "transactions.${transaction.date}" to transaction,
                     "sum" to user?.sum
                 )
             ).addOnFailureListener { e ->
@@ -275,7 +281,7 @@ class UserViewModel : ViewModel() {
         val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
         val user = currentUsers[userId]
         if (user != null) {
-            user.transactions.remove(transaction)
+            user.transactions.remove(transaction.date)
             var transactionAmount = transaction.amount.toIntOrNull() ?: 0
             if (transaction.type == "sent") {
                 transactionAmount = -(transactionAmount)
@@ -292,7 +298,7 @@ class UserViewModel : ViewModel() {
             val userRef = usersCollection.document(userId)
             userRef.update(
                 mapOf(
-                    "transactions" to FieldValue.arrayRemove(transaction),
+                    "transactions.${transaction.date}" to FieldValue.delete(),
                     "sum" to user?.sum
                 )
             ).addOnFailureListener { e ->
@@ -305,15 +311,18 @@ class UserViewModel : ViewModel() {
 
     fun editTransaction(
         userId: String,
-        oldTransaction: Transaction,
+        //oldTransaction: Transaction,
+        date:String,
         newTransaction: Transaction
     ): String {
         // Update local state first for immediate UI refresh
+
         val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
+        val oldTransaction= currentUsers[userId]?.transactions?.get(date)!!
         val user = currentUsers[userId]
         if (user != null) {
-            user.transactions.remove(oldTransaction)
-            user.transactions.add(newTransaction)
+            //user.transactions.remove(oldTransaction.date)
+            user.transactions[date] = newTransaction
             var oldTransactionAmount = oldTransaction.amount.toIntOrNull() ?: 0
             if (oldTransaction.type == "sent") {
                 oldTransactionAmount = -(oldTransactionAmount)
@@ -335,16 +344,11 @@ class UserViewModel : ViewModel() {
             val userRef = usersCollection.document(userId)
             userRef.update(
                 mapOf(
-                    "transactions" to FieldValue.arrayRemove(oldTransaction),
+                    "transactions.${oldTransaction.date}" to FieldValue.delete(),
+                    "transactions.${newTransaction.date}" to newTransaction,
                     "sum" to user?.sum
                 )
-            ).addOnSuccessListener {
-                userRef.update(
-                    mapOf(
-                        "transactions" to FieldValue.arrayUnion(newTransaction)
-                    )
-                )
-            }.addOnFailureListener { e ->
+            ).addOnFailureListener { e ->
                 // Handle the error
                 Log.e("Firestore", "Error updating document", e)
             }
@@ -353,11 +357,12 @@ class UserViewModel : ViewModel() {
     }
 
 
+
 }
 
 sealed class AuthState {
-    object Authenticated : AuthState()
-    object Unauthenticated : AuthState()
-    object Loading : AuthState()
+    data object Authenticated : AuthState()
+    data object Unauthenticated : AuthState()
+    data object Loading : AuthState()
     data class Error(val message: String) : AuthState()
 }

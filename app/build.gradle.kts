@@ -90,4 +90,5 @@ dependencies {
     testImplementation("com.google.dagger:hilt-android-testing:2.51.1")
     kspTest("com.google.dagger:hilt-compiler:2.51.1")
     implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation( "com.google.accompanist:accompanist-systemuicontroller:0.30.1")
 }
