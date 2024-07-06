@@ -17,8 +17,8 @@ class MainActivity : ComponentActivity() {
         FirebaseApp.initializeApp(this)
         setContent {
 
-            MyApp(userViewModel = userViewModel)
-
+           MyApp(userViewModel = userViewModel)
+           // ImageUploader()
         }
     }
 }

@@ -1,31 +1,131 @@
 package com.example.chitchat
 
-import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
 import android.util.Log
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableStateOf
+import android.widget.Toast
+import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.CollectionReference
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.toObject
+import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.tasks.await
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class UserViewModel : ViewModel() {
 
     private val db = FirebaseFirestore.getInstance()
-    val usersCollection = db.collection("users")
+    private lateinit var usersCollection: CollectionReference
+    val totalBalance: MutableLiveData<Int> = MutableLiveData(0)
+    private lateinit var totalBalanceFB: DocumentReference
+    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    private val _authState = MutableLiveData<AuthState>()
+    val authState: LiveData<AuthState> = _authState
+    var currPerson = "-1"
+    val storage = FirebaseStorage.getInstance()
+
 
     init {
-        fetchUsers()
+        checkAuthStatus()
     }
-   //val users: MutableMap<String, User> = mutableMapOf()
-   val users: MutableLiveData<Map<String, User>> = MutableLiveData(emptyMap())
 
+
+    private fun checkAuthStatus() {
+        if (auth.currentUser == null) {
+            _authState.value = AuthState.Unauthenticated
+        } else {
+            _authState.value = AuthState.Authenticated
+            currPerson = auth.currentUser!!.email.toString()
+            usersCollection = db.collection(currPerson)
+            totalBalanceFB = db.collection(currPerson).document("total")
+            fetchUsers()
+            fetchTotalBalance()
+        }
+    }
+
+    suspend fun uploadImageToFirebase(
+        uri: Uri,
+        context: Context
+    ): String {
+        val storage = FirebaseStorage.getInstance()
+        val storageRef = storage.reference.child("billImages/$currPerson/${uri.lastPathSegment}")
+
+        return try {
+            // Upload the file to Firebase Storage
+            storageRef.putFile(uri).await()
+            // Get the download URL
+            val downloadUrl = storageRef.downloadUrl.await().toString()
+            Toast.makeText(context, "Upload successful!", Toast.LENGTH_SHORT).show()
+            downloadUrl
+        } catch (e: Exception) {
+            Toast.makeText(context, "Upload failed!", Toast.LENGTH_SHORT).show()
+            "error"
+        }
+    }
+
+    fun login(email: String, password: String) {
+        if (email.isEmpty() || password.isEmpty()) {
+            _authState.value = AuthState.Error("Email or password can't be empty")
+            return
+        }
+        _authState.value = AuthState.Loading
+        auth.signInWithEmailAndPassword(email, password).addOnCompleteListener {
+            if (it.isSuccessful) {
+                _authState.value = AuthState.Authenticated
+                currPerson = email
+                usersCollection = db.collection(currPerson)
+                totalBalanceFB = db.collection(currPerson).document("total")
+                fetchUsers()
+                fetchTotalBalance()
+            } else {
+                _authState.value = AuthState.Error(it.exception?.message ?: "Error !")
+            }
+        }
+    }
+
+    fun signIn(email: String, password: String) {
+        if (email.isEmpty() || password.isEmpty()) {
+            _authState.value = AuthState.Error("Email or password can't be empty")
+            return
+        }
+        _authState.value = AuthState.Loading
+        auth.createUserWithEmailAndPassword(email, password).addOnCompleteListener {
+            if (it.isSuccessful) {
+                _authState.value = AuthState.Authenticated
+                currPerson = email
+                usersCollection = db.collection(currPerson)
+                totalBalanceFB = db.collection(currPerson).document("total")
+                fetchUsers()
+                fetchTotalBalance()
+            } else {
+                _authState.value = AuthState.Error(it.exception?.message ?: "Error !")
+            }
+        }
+    }
+
+    fun signOut() {
+        auth.signOut()
+        _authState.value = AuthState.Unauthenticated
+    }
+
+    private fun fetchTotalBalance() {
+        totalBalanceFB.get().addOnSuccessListener { document ->
+            totalBalance.value = document.toObject(Total::class.java)?.total ?: 0
+        }.addOnFailureListener {
+            totalBalance.value = 0
+        }
+    }
+
+    val users: MutableLiveData<Map<String, User>> = MutableLiveData(emptyMap())
 
 
     suspend fun getUserById(userId: String): User {
@@ -51,8 +151,6 @@ class UserViewModel : ViewModel() {
     }
 
 
-
-
     private fun fetchUsers() {
         usersCollection.addSnapshotListener { snapshot, e ->
             if (e != null || snapshot == null) {
@@ -71,18 +169,38 @@ class UserViewModel : ViewModel() {
                 }
             }.toMap()
 
-            users.value = userMap
+            users.value = userMap - "total"
+
         }
     }
 
 
-    fun addUser(user: User) {
+    fun addUser(user: User): String {
+        if (users.value?.containsKey(user.id) == true || user.name == "" || invalid(user.id)) {
+            return "error"
+        }
         viewModelScope.launch {
             usersCollection.document(user.id).set(user)
             // Update the LiveData map
             val currentUsers = users.value ?: emptyMap()
             users.value = currentUsers + (user.id to user)
+
         }
+        return "okay"
+    }
+
+    private fun invalid(number: String): Boolean {
+        if (number == "") {
+            return true
+        }
+        for (i in number) {
+            if (i in '0'..'9') {
+                continue
+            } else {
+                return true
+            }
+        }
+        return false
     }
 
 
@@ -90,48 +208,156 @@ class UserViewModel : ViewModel() {
         viewModelScope.launch {
             usersCollection.document(userId).delete()
             // Update the LiveData map
+            totalBalance.value =
+                users.value?.get(userId)?.sum?.let { totalBalance.value?.minus(it.toInt()) }
+            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
             val currentUsers = users.value ?: emptyMap()
             users.value = currentUsers - userId
         }
     }
+
     fun editUser(user: User) {
         viewModelScope.launch {
             usersCollection.document(user.id).set(user)
             // Update the LiveData map
+            val userId = user.id
+            totalBalance.value =
+                users.value?.get(userId)?.sum?.let { totalBalance.value?.minus(it.toInt()) }
             val currentUsers = users.value ?: emptyMap()
             users.value = currentUsers + (user.id to user)
+            totalBalance.value =
+                users.value?.get(userId)?.sum?.let { totalBalance.value?.plus(it.toInt()) }
+            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
         }
     }
 
 
-    fun addTransaction(userId: String, transaction: Transaction) {
+    fun addTransaction(userId: String, transaction: Transaction): String {
+        // Update local state first for immediate UI refresh
+        if (invalid(transaction.amount)) {
+            return "error"
+        }
+        val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
+        val user = currentUsers[userId]
+        if (user != null) {
+            user.transactions.add(transaction)
+            var transactionAmount = transaction.amount.toIntOrNull() ?: 0
+            if (transaction.type == "sent") {
+                transactionAmount = -(transactionAmount)
+            }
+            user.sum = (user.sum.toInt() + transactionAmount).toString()
+            currentUsers[userId] = user
+            users.value = currentUsers
+            totalBalance.value = totalBalance.value?.plus(transactionAmount)
+            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
+            // Trigger recomposition
+            //forceRecompose.value = !forceRecompose.value!!
+        }
+
+        // Sync with Firestore in the background
         viewModelScope.launch {
             val userRef = usersCollection.document(userId)
-            userRef.update("transactions", FieldValue.arrayUnion(transaction))
-            // Update the LiveData map
-            val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
-            currentUsers[userId]?.transactions?.add(transaction)
-            users.value = currentUsers
+            userRef.update(
+                mapOf(
+                    "transactions" to FieldValue.arrayUnion(transaction),
+                    "sum" to user?.sum
+                )
+            ).addOnFailureListener { e ->
+                // Handle the error
+                Log.e("Firestore", "Error updating document", e)
+            }
         }
+        return "okay"
     }
 
+    fun deleteTransaction(userId: String, transaction: Transaction): String {
+        // Update local state first for immediate UI refresh
+        val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
+        val user = currentUsers[userId]
+        if (user != null) {
+            user.transactions.remove(transaction)
+            var transactionAmount = transaction.amount.toIntOrNull() ?: 0
+            if (transaction.type == "sent") {
+                transactionAmount = -(transactionAmount)
+            }
+            user.sum = (user.sum.toInt() - transactionAmount).toString()
+            currentUsers[userId] = user
+            users.value = currentUsers
+            totalBalance.value = totalBalance.value?.minus(transactionAmount)
+            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
+        }
 
-    fun deleteTransaction(userId: String, transaction: Transaction) {
+        // Sync with Firestore in the background
         viewModelScope.launch {
             val userRef = usersCollection.document(userId)
-            userRef.update("transactions", FieldValue.arrayRemove(transaction))
-            // Update the LiveData map
-            val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
-            currentUsers[userId]?.transactions?.remove(transaction)
+            userRef.update(
+                mapOf(
+                    "transactions" to FieldValue.arrayRemove(transaction),
+                    "sum" to user?.sum
+                )
+            ).addOnFailureListener { e ->
+                // Handle the error
+                Log.e("Firestore", "Error updating document", e)
+            }
+        }
+        return "okay"
+    }
+
+    fun editTransaction(
+        userId: String,
+        oldTransaction: Transaction,
+        newTransaction: Transaction
+    ): String {
+        // Update local state first for immediate UI refresh
+        val currentUsers = users.value?.toMutableMap() ?: mutableMapOf()
+        val user = currentUsers[userId]
+        if (user != null) {
+            user.transactions.remove(oldTransaction)
+            user.transactions.add(newTransaction)
+            var oldTransactionAmount = oldTransaction.amount.toIntOrNull() ?: 0
+            if (oldTransaction.type == "sent") {
+                oldTransactionAmount = -(oldTransactionAmount)
+            }
+            var newTransactionAmount = newTransaction.amount.toIntOrNull() ?: 0
+            if (newTransaction.type == "sent") {
+                newTransactionAmount = -(newTransactionAmount)
+            }
+            user.sum = (user.sum.toInt() - oldTransactionAmount + newTransactionAmount).toString()
+            currentUsers[userId] = user
             users.value = currentUsers
+            totalBalance.value =
+                totalBalance.value?.minus(oldTransactionAmount)?.plus(newTransactionAmount)
+            totalBalance.value?.let { Total(it) }?.let { totalBalanceFB.set(it) }
         }
-    }
 
-
-    fun editTransaction(userId: String, oldTransaction: Transaction, newTransaction: Transaction) {
+        // Sync with Firestore in the background
         viewModelScope.launch {
-            deleteTransaction(userId, oldTransaction)
-            addTransaction(userId, newTransaction)
+            val userRef = usersCollection.document(userId)
+            userRef.update(
+                mapOf(
+                    "transactions" to FieldValue.arrayRemove(oldTransaction),
+                    "sum" to user?.sum
+                )
+            ).addOnSuccessListener {
+                userRef.update(
+                    mapOf(
+                        "transactions" to FieldValue.arrayUnion(newTransaction)
+                    )
+                )
+            }.addOnFailureListener { e ->
+                // Handle the error
+                Log.e("Firestore", "Error updating document", e)
+            }
         }
+        return "okay"
     }
+
+
+}
+
+sealed class AuthState {
+    object Authenticated : AuthState()
+    object Unauthenticated : AuthState()
+    object Loading : AuthState()
+    data class Error(val message: String) : AuthState()
 }
